@@ -60,6 +60,11 @@ trap '' INT QUIT TERM PIPE HUP
 stdout_workaround=1	# needed for older perf versions
 write_workaround=1	# needed for perf versions that trace their own writes
 
+#PERF=/usr/lib/linux-tools/4.4.0-210-generic/perf
+
+PERF=perf
+
+#PERF=/usr/lib/linux-tools/5.15.0-46-generic/perf
 ### parse options
 while getopts cd:hp:t:v opt
 do
@@ -99,10 +104,10 @@ if (( $# > 0 )); then
 	cmd="$@"
 	cpus=
 fi
-if (( opt_pid + opt_duration + opt_cmd > 1 )); then
-	echo >&2 "ERROR: Pick one of {-p PID|-n name|-d seconds|command}"
-	exit 1
-fi
+# if (( opt_pid + opt_duration + opt_cmd > 1 )); then
+# 	echo >&2 "ERROR: Pick one of {-p PID|-n name|-d seconds|command}"
+# 	exit 1
+# fi
 if (( opt_tail )); then
 	tcmd="tail -$tnum"
 	ttext=" Top $tnum only."
@@ -111,11 +116,22 @@ if (( opt_duration )); then
 	cmd="sleep $duration"
 	echo "Tracing for $duration seconds.$ttext.."
 fi
+
 if (( opt_pid )); then
 	cpus=
 	cmd="-p $pid"
-	echo "Tracing PID $pid.$ttext.. Ctrl-C to end."
+
+	if (( opt_duration )); then
+		cmd=$cmd" sleep $duration"
+		echo "Tracing PID $pid for $duration seconds. $ttext.. Ctrl-C to end."
+	else
+		echo "Tracing PID $pid.$ttext.. Ctrl-C to end."
+
+	fi
+
 fi
+
+
 (( opt_cmd )) && echo "Tracing while running: \"$cmd\".$ttext.."
 (( opt_pid + opt_duration + opt_cmd == 0 )) && \
     echo "Tracing.$ttext.. Ctrl-C to end."
@@ -126,7 +142,8 @@ ulimit -n 32768		# often needed
 ### execute syscall name mode
 if (( opt_count && ! opt_verbose )); then
 	: ${cmd:=sleep 999999}
-	out=$(perf stat $opts -e 'syscalls:sys_enter_*' $cpus $cmd)
+	echo "$PERF stat $opts -e 'syscalls:sys_enter_*' $cpus $cmd"
+	out=$($PERF stat $opts -e 'syscalls:sys_enter_*' $cpus $cmd)
 	printf "%-17s %8s\n" "SYSCALL" "COUNT"
 	echo "$out" | awk '
 	$1 && $2 ~ /syscalls:/ {
@@ -141,12 +158,14 @@ fi
 if (( opt_count && opt_verbose )); then
 	if (( write_workaround )); then
 		# this list must end in write to associate the filter
-		tp=$(perf list syscalls:sys_enter_* | awk '
+		tp=$($PERF list syscalls:sys_enter_* | awk '
 		    $1 != "syscalls:sys_enter_write" &&  $1 ~ /syscalls:/ { printf "-e %s ", $1 }')
 		tp="$tp -e syscalls:sys_enter_write"
-		sh -c "perf record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
+		echo "$PERF record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
+		sh -c "$PERF record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
 	else
-		perf record 'syscalls:sys_enter_*' $cpus $cmd
+		echo "$PERF record 'syscalls:sys_enter_*' $cpus $cmd"
+		$PERF record 'syscalls:sys_enter_*' $cpus $cmd
 		# could also pipe direct to perf script
 	fi
 
@@ -166,15 +185,18 @@ fi
 
 ### execute process name mode
 tp="-e raw_syscalls:sys_enter"
+
 if (( write_workaround )); then
-	sh -c "perf record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
+	echo "$PERF record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
+	sh -c "$PERF record $tp --filter 'common_pid != '\$\$ $cpus $cmd"
 else
-	perf record $tp $cpus $cmd
+	echo "$PERF record $tp $cpus $cmd"
+	$PERF record $tp $cpus $cmd
 fi
 
 if (( opt_verbose )); then
 	printf "%-6s %-16s %8s\n" "PID" "COMM" "COUNT"
-	perf script --fields pid,comm | awk '$1 != "#" { a[$1 ";" $2]++ }
+	$PERF script --fields pid,comm | awk '$1 != "#" { a[$1 ";" $2]++ }
 	END {
 		for (k in a) {
 			split(k, b, ";");
@@ -183,7 +205,7 @@ if (( opt_verbose )); then
 	}' | sort -n -k3 | $tcmd
 else
 	printf "%-16s %8s\n" "COMM" "COUNT"
-	perf script --fields comm | awk '$1 != "#" { a[$1]++ }
+	$PERF script --fields comm | awk '$1 != "#" { a[$1]++ }
 	END {
 		for (k in a) {
 			printf "%-16s %8d\n", k,  a[k]
